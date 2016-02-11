@@ -11,7 +11,7 @@
   </parent>
 
   <artifactId>jicoco</artifactId>
-  <version>1.0-SNAPSHOT</version>
+  <version>1.0-INFLUX-SNAPSHOT</version>
   <packaging>jar</packaging>
 
   <name>jicoco</name>
