@@ -278,7 +278,10 @@ public class ComponentMain
                     logger.error(
                         e.getMessage() +
                             ", host:" + component.getHostname() +
-                            ", port:" + component.getPort(), e);
+                            ", port:" + component.getPort() +
+                            ", domain:" + component.getDomain() +
+                            ", subdomain:" + component.getSubdomain() +
+                            ", password:" + component.getSecret(), e);
                     return true;
                 }
             }
