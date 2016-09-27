@@ -1,6 +1,4 @@
 /*
- * LibJitsi-Protocol
- *
  * Copyright @ 2015 Atlassian Pty Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,10 +18,13 @@ package org.jitsi.xmpp.util;
 import org.dom4j.*;
 import org.dom4j.io.*;
 import org.jitsi.util.StringUtils;
+import org.jivesoftware.smack.packet.*;
 import org.jivesoftware.smack.provider.*;
 import org.jivesoftware.smack.util.*;
 import org.xmlpull.v1.*;
 import org.xmpp.packet.*;
+import org.xmpp.packet.IQ;
+import org.xmpp.packet.Packet;
 
 import java.io.*;
 
@@ -100,31 +101,40 @@ public final class IQUtils
      * represents the same stanza as the specified <tt>iq</tt>
      * @throws Exception if anything goes wrong during the conversion
      */
+    // It is safe to cast as ProviderManager verifies classes
+    // the warning is about cast 'providerOrClass' var to '? extends IQ'
+    @SuppressWarnings("unchecked")
     public static org.jivesoftware.smack.packet.IQ convert(
             org.xmpp.packet.IQ iq)
         throws Exception
     {
         Element element = iq.getChildElement();
-        IQProvider iqProvider;
+        IQProvider iqProvider = null;
+        Class<? extends IQ> iqClass = null;
 
-        if (element == null)
+        if (element != null)
         {
-            iqProvider = null;
-        }
-        else
-        {
-            iqProvider
-                = (IQProvider)
-                    ProviderManager.getInstance().getIQProvider(
-                            element.getName(),
-                            element.getNamespaceURI());
+            Object providerOrClass
+                = ProviderManager.getInstance().getIQProvider(
+                        element.getName(),
+                        element.getNamespaceURI());
+            if (providerOrClass instanceof IQProvider)
+            {
+                iqProvider = (IQProvider) providerOrClass;
+            }
+            else
+            {
+                // The cast is safe as ProviderManager allows only
+                // IQ or IQProvider here
+                iqClass = (Class<? extends IQ>) providerOrClass;
+            }
         }
 
         IQ.Type type = iq.getType();
         org.jivesoftware.smack.packet.IQ smackIQ = null;
         org.jivesoftware.smack.packet.XMPPError smackError = null;
 
-        if (iqProvider != null || iq.getError() != null)
+        if (iqProvider != null || iqClass != null || iq.getError() != null)
         {
             XmlPullParserFactory xmlPullParserFactory;
 
@@ -144,61 +154,62 @@ public final class IQUtils
             parser.setInput(new StringReader(iq.toXML()));
 
             int eventType = parser.next();
-
-            if (XmlPullParser.START_TAG == eventType)
+            // Abort processing if we're not at the beginning of <iq> element
+            if (XmlPullParser.START_TAG != eventType)
             {
-                String name = parser.getName();
+                throw new IllegalStateException(
+                    Integer.toString(eventType)
+                        + " != XmlPullParser.START_TAG");
+            }
 
-                if ("iq".equals(name))
+            String name = parser.getName();
+            // Stop processing if the element is not <iq>
+            if (!"iq".equals(name))
+            {
+                throw new IllegalStateException(name + " != iq");
+            }
+
+            do
+            {
+                eventType = parser.next();
+                name = parser.getName();
+                if (XmlPullParser.START_TAG == eventType)
                 {
-                    do
+                    // 7. An IQ stanza of type "error" MAY include the
+                    // child element contained in the associated "get"
+                    // or "set" and MUST include an <error/> child.
+                    if (IQ.Type.error.equals(type) && "error".equals(name))
                     {
-                        eventType = parser.next();
-                        name = parser.getName();
-                        if (XmlPullParser.START_TAG == eventType)
-                        {
-                            // 7. An IQ stanza of type "error" MAY include the
-                            // child element contained in the associated "get"
-                            // or "set" and MUST include an <error/> child.
-                            if (IQ.Type.error.equals(type)
-                                && "error".equals(name))
-                            {
-                                smackError
-                                    = PacketParserUtils.parseError(parser);
-                            }
-                            else if (smackIQ == null && iqProvider != null)
-                            {
-                                smackIQ = iqProvider.parseIQ(parser);
-                            }
-                        }
-                        else if ((XmlPullParser.END_TAG == eventType
-                                        && "iq".equals(name))
-                                || (smackIQ != null && smackError != null)
-                                || XmlPullParser.END_DOCUMENT == eventType)
-                        {
-                            break;
-                        }
+                        smackError = PacketParserUtils.parseError(parser);
                     }
-                    while (true);
-
-                    eventType = parser.getEventType();
-                    if (XmlPullParser.END_TAG != eventType)
+                    else if (smackIQ == null && iqProvider != null)
                     {
-                        throw new IllegalStateException(
-                                Integer.toString(eventType)
-                                    + " != XmlPullParser.END_TAG");
+                        smackIQ = iqProvider.parseIQ(parser);
+                    }
+                    else if (smackIQ == null && iqClass != null)
+                    {
+                        smackIQ = (org.jivesoftware.smack.packet.IQ)
+                            PacketParserUtils.parseWithIntrospection(
+                                    name, iqClass, parser);
                     }
                 }
-                else
+                else if ((XmlPullParser.END_TAG == eventType
+                            && "iq".equals(name))
+                        || (smackIQ != null && smackError != null)
+                        || XmlPullParser.END_DOCUMENT == eventType)
                 {
-                    throw new IllegalStateException(name + " != iq");
+                    break;
                 }
             }
-            else
+            while (true);
+
+            // Throw an exception if we have not consumed the whole <iq> element
+            eventType = parser.getEventType();
+            if (XmlPullParser.END_TAG != eventType)
             {
                 throw new IllegalStateException(
                         Integer.toString(eventType)
-                            + " != XmlPullParser.START_TAG");
+                            + " != XmlPullParser.END_TAG");
             }
         }
 
@@ -275,6 +286,43 @@ public final class IQUtils
             org.xmpp.packet.IQ.Type type)
     {
         return org.jivesoftware.smack.packet.IQ.Type.fromString(type.name());
+    }
+
+    /**
+     * Method overload for {@link #createError(
+     * org.jivesoftware.smack.packet.IQ, XMPPError.Condition, String)} with
+     * no error message text.
+     *
+     * @see #createError(org.jivesoftware.smack.packet.IQ, XMPPError.Condition,
+     * String)
+     */
+    public static org.jivesoftware.smack.packet.IQ createError(
+            org.jivesoftware.smack.packet.IQ    request,
+            XMPPError.Condition                 errorCondition)
+    {
+        return createError(request, errorCondition, null);
+    }
+
+    /**
+     * A shortcut for <tt>new XMPPError(request,
+     * new XMPPError(errorCondition, errorMessage));</tt>. Create error response
+     * to given <tt>request</tt> IQ.
+     *
+     * @param request the request IQ for which the error response will be
+     *                created.
+     * @param errorCondition the XMPP error condition for the error response.
+     * @param errorMessage the error text message to be included in the error
+     *                     response.
+     *
+     * @return an IQ which is an XMPP error response to given <tt>request</tt>.
+     */
+    public static org.jivesoftware.smack.packet.IQ createError(
+            org.jivesoftware.smack.packet.IQ    request,
+            XMPPError.Condition                 errorCondition,
+            String                              errorMessage)
+    {
+        return org.jivesoftware.smack.packet.IQ.createErrorResponse(
+                request, new XMPPError(errorCondition, errorMessage));
     }
 
     /**
@@ -367,6 +415,22 @@ public final class IQUtils
         }
 
         return smackIQ;
+    }
+
+    /**
+     * Utility method which can be used for logging XML of response packets.
+     * It deals with the timeout case where the response is <tt>null</tt>.
+     *
+     * @param response a <tt>Packet</tt> instance returned by XMPP connection as
+     *        a response to some request.
+     *
+     * @return {@link Packet#toXML()} or "(timeout)" <tt>String</tt> if given
+     *         <tt>response</tt> is <tt>null</tt>.
+     */
+    public static String responseToXML(
+            org.jivesoftware.smack.packet.Packet response)
+    {
+        return response != null ? response.toXML() : "(timeout)";
     }
 
     /** Prevents the initialization of new <tt>IQUtils</tt> instances. */
